@@ -1,0 +1,8 @@
+[Unit]
+Description=Supertonic TTS server (keeps the model loaded for speech-dispatcher)
+Requires=supertonic-tts.socket
+
+[Service]
+ExecStart=@UV@ run --script @APPDIR@/supertonic_server.py
+Environment=SPEECHD_SUPERTONIC_LOG=@LOG@
+Restart=on-failure

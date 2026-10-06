@@ -1,0 +1,8 @@
+[Unit]
+Description=Supertonic TTS server socket (for speech-dispatcher)
+
+[Socket]
+ListenStream=%t/supertonic-tts.sock
+
+[Install]
+WantedBy=sockets.target
