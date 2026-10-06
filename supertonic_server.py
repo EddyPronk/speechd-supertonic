@@ -53,6 +53,9 @@ STEPS = 8  # quality steps per chunk: more is better but slower
 # Steps for a paragraph's first chunk, the only one the listener waits for.
 # Set with --first-steps (e.g. 4 to roughly halve the wait); see docs/testing.md.
 first_steps = STEPS
+# The text being read (web pages, documents) is only logged with --debug;
+# otherwise the log shows its length.
+log_text = False
 TRIM_THRESHOLD = 0.01      # samples quieter than this count as silence...
 TRIM_MARGIN = 0.04         # ...but keep this much around the audible part (soft consonants)
 SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "supertonic-tts.sock"
@@ -69,6 +72,11 @@ def speechd_rate_to_speed(rate):
     if rate < 0:
         return 1.05 + rate / 100 * 0.35
     return 1.05 + rate / 100 * 0.95
+
+
+def shown(text):
+    """The text for the log: itself with --debug, otherwise only its length."""
+    return repr(text) if log_text else f"<{len(text)} chars>"
 
 
 def split_voice(voice):
@@ -159,8 +167,8 @@ class Handler(socketserver.StreamRequestHandler):
         received = time.monotonic()
         name, voice_lang = split_voice(voice)
         lang = speechd_lang(voice_lang or lang_in)
-        log.info("[%s] start voice=%s lang=%s (speechd voice=%s language=%s) rate=%s volume=%s text=%r",
-                 req_id, name, lang, voice, lang_in, rate, volume, text)
+        log.info("[%s] start voice=%s lang=%s (speechd voice=%s language=%s) rate=%s volume=%s text=%s",
+                 req_id, name, lang, voice, lang_in, rate, volume, shown(text))
         if not text:
             log.info("[%s] done (empty text)", req_id)
             return
@@ -214,9 +222,9 @@ class Handler(socketserver.StreamRequestHandler):
                         timing = f"LATE by {-ahead:.2f}s (audible gap)"
                         first_audio -= ahead  # playback resumes now
                 log.info("[%s] chunk %d/%d synthesized in %.2fs (%.2fs audio after trimming "
-                         "%.2fs+%.2fs silence, %.0f%% of real time), %s: %r",
+                         "%.2fs+%.2fs silence, %.0f%% of real time), %s: %s",
                          req_id, i + 1, len(pieces), synth, length, cut_lead, cut_trail,
-                         100 * synth / max(length, 1e-6), timing, piece)
+                         100 * synth / max(length, 1e-6), timing, shown(piece))
                 if i < len(pieces) - 1:
                     audio = np.concatenate([audio, np.zeros(int(SILENCE_SECONDS * SAMPLE_RATE), dtype=np.float32)])
                 audio_seconds += audio.size / SAMPLE_RATE
@@ -271,11 +279,14 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
 
 def main():
-    global first_steps
+    global first_steps, log_text
     parser = argparse.ArgumentParser(description="Supertonic TTS server for speech-dispatcher")
     parser.add_argument("--first-steps", type=int, default=STEPS,
                         help=f"quality steps for each paragraph's first chunk (default: {STEPS})")
-    first_steps = parser.parse_args().first_steps
+    parser.add_argument("--debug", action="store_true",
+                        help="log the text being read (default: only its length)")
+    args = parser.parse_args()
+    first_steps, log_text = args.first_steps, args.debug
 
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -286,7 +297,8 @@ def main():
     # Supertonic logs every model detail at INFO; keep the log about requests.
     logging.getLogger("supertonic").setLevel(logging.WARNING)
 
-    log.info("quality steps: %d, first chunk of a paragraph: %d", STEPS, first_steps)
+    log.info("quality steps: %d, first chunk of a paragraph: %d; text in log: %s",
+             STEPS, first_steps, "yes (--debug)" if log_text else "no, length only")
     with Server(Engine()) as server:
         try:
             server.serve_forever()

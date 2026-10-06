@@ -4,6 +4,7 @@
 #   ./install.sh                          # voices for English + your locale's language
 #   ./install.sh --languages "en nl de"   # choose the voice languages
 #   ./install.sh --no-default             # don't make Supertonic speech-dispatcher's default
+#   ./install.sh --debug                  # also log the text being read (default: length only)
 #   ./install.sh --uninstall
 #
 # Everything goes into your home directory; no root needed. See README.md.
@@ -68,12 +69,14 @@ uninstall() {
 
 LANGUAGES=""
 SET_DEFAULT=1
+SERVER_ARGS=""
 while [ $# -gt 0 ]; do
     case $1 in
         --uninstall) uninstall; exit 0 ;;
         --languages) LANGUAGES=${2:?--languages needs a value, e.g. \"en nl\"}; shift ;;
         --no-default) SET_DEFAULT=0 ;;
-        -h|--help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        --debug) SERVER_ARGS=" --debug" ;;
+        -h|--help) sed -n '2,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -191,7 +194,7 @@ remove_block "$conf"
 say "Installing the systemd user units (socket starts the server on first use)"
 mkdir -p "$UNITS"
 install -m 644 "$SRC/systemd/supertonic-tts.socket" "$UNITS/"
-sed -e "s#@UV@#$UV#g" -e "s#@APPDIR@#$APPDIR#g" -e "s#@LOG@#$LOG#g" \
+sed -e "s#@UV@#$UV#g" -e "s#@APPDIR@#$APPDIR#g" -e "s#@LOG@#$LOG#g" -e "s#@SERVER_ARGS@#$SERVER_ARGS#g" \
     "$SRC/systemd/supertonic-tts.service.in" > "$UNITS/supertonic-tts.service"
 systemctl --user daemon-reload
 systemctl --user enable --now supertonic-tts.socket

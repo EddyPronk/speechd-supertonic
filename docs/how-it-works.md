@@ -113,7 +113,7 @@ Check from a terminal:
 spd-say -O                          # modules: supertonic, espeak-ng
 spd-say -o supertonic -L            # voices
 spd-say -o supertonic -y F2-en "Hello"
-spd-say -o supertonic -y M2-nl "Hallo allemaal"
+spd-say -o supertonic -y M2-en "Hello everyone"    # use the -nl, -de, ... voices for other languages
 ```
 
 Straight to the server, without speech-dispatcher:
@@ -145,17 +145,25 @@ request starts it again with the new config.
 ## Logging
 
 The server logs every request to `~/.cache/speechd_supertonic.log` (override with
-`$SPEECHD_SUPERTONIC_LOG`) and to the journal. The sd_generic command appends
+`$SPEECHD_SUPERTONIC_LOG`) and to the journal.
+
+The text being read (web pages, documents) is **not** logged by default, only
+its length: `text=<553 chars>`, and `: <57 chars>` for each sentence. Start the
+server with `--debug` to log the text as well (`./install.sh --debug` sets that
+in the service). The first log line says which mode is on:
+`text in log: no, length only` or `text in log: yes (--debug)`. The example
+below was logged with `--debug` while reading a Dutch article (`lang=nl`); the
+text snippets are translated to English here. The sd_generic command appends
 client and `pw-play` errors to the same file, plus a `[player] playback finished`
 line when an utterance has actually finished playing.
 
 ```
 21:20:56,303 [player] INFO playback finished
-21:20:56,368 [server] INFO [2] start voice=F1 lang=nl (speechd voice=F1-nl language=en) rate=0 volume=1 text='De folk-ambientsfeer, ...'
-21:20:58,828 [server] INFO [2] chunk 1/4 synthesized in 2.46s (10.32s audio after trimming 0.24s+0.45s silence, 24% of real time), first audio 2.46s after request, ~2.49s silence since previous audio: 'De folk-ambientsfeer, ...'
-21:21:01,071 [server] INFO [2] chunk 2/4 synthesized in 2.24s (8.42s audio after trimming 0.55s+0.71s silence, 27% of real time), ready 8.52s before needed: 'De meanderende gitaarp ...'
-21:21:02,564 [server] INFO [2] chunk 3/4 synthesized in 1.49s (5.19s audio after trimming 0.55s+0.66s silence, 29% of real time), ready 15.90s before needed: 'Toch blijft O’Brien ui ...'
-21:21:04,273 [server] INFO [2] chunk 4/4 synthesized in 1.71s (6.11s audio after trimming 0.52s+0.76s silence, 28% of real time), ready 19.84s before needed: 'Zijn muziek ontvouwt z ...'
+21:20:56,368 [server] INFO [2] start voice=F1 lang=nl (speechd voice=F1-nl language=en) rate=0 volume=1 text='The folk-ambient mood, ...'
+21:20:58,828 [server] INFO [2] chunk 1/4 synthesized in 2.46s (10.32s audio after trimming 0.24s+0.45s silence, 24% of real time), first audio 2.46s after request, ~2.49s silence since previous audio: 'The folk-ambient mood, ...'
+21:21:01,071 [server] INFO [2] chunk 2/4 synthesized in 2.24s (8.42s audio after trimming 0.55s+0.71s silence, 27% of real time), ready 8.52s before needed: 'The meandering guitar ...'
+21:21:02,564 [server] INFO [2] chunk 3/4 synthesized in 1.49s (5.19s audio after trimming 0.55s+0.66s silence, 29% of real time), ready 15.90s before needed: 'Yet O’Brien stays ...'
+21:21:04,273 [server] INFO [2] chunk 4/4 synthesized in 1.71s (6.11s audio after trimming 0.52s+0.76s silence, 28% of real time), ready 19.84s before needed: 'His music unfolds ...'
 21:21:04,288 [server] INFO [2] synthesis done: 4 chunks, 31.39s audio in 7.90s; audio should end in ~25.93s
 21:21:30,181 [player] INFO playback finished
 ```
@@ -185,7 +193,8 @@ Reading it:
 `speechd_timing.py` turns this into a table per utterance; see
 [testing.md](testing.md).
 
-Deeper debugging (turn off afterwards, the logs grow fast):
+Deeper debugging (turn off afterwards: the logs grow fast and, unlike the
+server's default log, contain the full text being read):
 
 - `Debug 1` at the top of `supertonic.conf`: sd_generic logs the exact text it
   receives and how it ran the command, in

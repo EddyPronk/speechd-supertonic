@@ -47,6 +47,15 @@ Supported: en ko ja ar bg cs da de el es et fi fr hi hr hu id it lt lv nl pl pt
 ro ru sk sl sv tr uk vi. Rerun `install.sh` any time to change languages or to
 update after a `git pull`.
 
+The log records timing and the length of what was read, not the text itself.
+To log the text too (handy when something is mispronounced or skipped):
+
+```
+./install.sh --debug
+```
+
+Run `./install.sh` again without it to switch back.
+
 What it does, all in your home directory (no root):
 
 1. Copies the server and client to `~/.local/share/speechd-supertonic/`.
@@ -102,7 +111,8 @@ able to reach speech-dispatcher), and other browsers.
 
 ## Troubleshooting
 
-The server logs every utterance to `~/.cache/speechd_supertonic.log`; see
+The server logs every utterance to `~/.cache/speechd_supertonic.log` (timing
+and length; the text itself only after `./install.sh --debug`). See
 [docs/how-it-works.md](docs/how-it-works.md#logging) for how to read it.
 
 | Symptom | Likely cause | What to do |

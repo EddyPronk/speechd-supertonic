@@ -27,6 +27,10 @@ experiments still to run. Setup and log format are described in
    | `end err` | actual `playback finished` minus the predicted end; near 0 = no unexpected gaps |
    | `LATE [..]` | audible gaps inside the paragraph (should never appear) |
 
+   The `text` column shows the text only if the server runs with `--debug`
+   (`./install.sh --debug`); otherwise "(N chars, text not logged)". Timing
+   works either way.
+
    Footer: min/median/max silence between utterances (pauses over 30s, i.e.
    pausing in Firefox, are left out), average silence trimmed per chunk, and the
    number of LATE chunks.
@@ -38,7 +42,7 @@ experiments still to run. Setup and log format are described in
 To test without disturbing playback (no sound, synthesis times only):
 
 ```
-printf %s 'Een zin. Nog een zin.' | ~/.local/share/speechd-supertonic/supertonic_say.py --voice F1-nl > /dev/null
+printf %s 'One sentence. Another sentence.' | ~/.local/share/speechd-supertonic/supertonic_say.py --voice F1-en > /dev/null
 ```
 
 The `ready`/`LATE` numbers are still valid that way; the "silence since previous
@@ -68,7 +72,7 @@ of the page again.
   |-----------|---------|---------|
   | short items (setlist) | "Thin Places", "Brasil" | 0.58–1.1s |
   | header items | title, byline, "6–8 minutes" | 0.7–1.6s |
-  | paragraphs with a long first sentence | "Met Obrigado sluit O’Brien, evenals op het album, …" | 2.5–3.9s |
+  | paragraphs with a long first sentence | an opening sentence of 20–25 words | 2.5–3.9s |
 
   Median over all utterances: 0.86s.
 

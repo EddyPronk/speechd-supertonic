@@ -23,9 +23,12 @@ lines = lines[max(i for i, l in enumerate(lines) if "model loaded" in l):]
 ts = lambda l: datetime.strptime(l[:23], "%Y-%m-%d %H:%M:%S,%f")
 reqs, last = [], None
 for l in lines:
-    m = re.search(r"\[(\d+)\] start .*?text=(['\"])(.*)\2$", l)
+    # text='...' with the server's --debug, otherwise text=<N chars>
+    m = re.search(r"\[(\d+)\] start .*?text=(?:(['\"])(.*)\2|<(\d+) chars>)$", l)
     if m:
-        reqs.append(dict(id=int(m[1]), text=m[3], prev=last, n=0, late=[], ahead=[], trims=[], stopped=False))
+        text = m[3] if m[3] is not None else f"({m[4]} chars, text not logged)"
+        chars = len(m[3]) if m[3] is not None else int(m[4])
+        reqs.append(dict(id=int(m[1]), text=text, chars=chars, prev=last, n=0, late=[], ahead=[], trims=[], stopped=False))
         continue
     if "playback finished" in l:
         last = ts(l)
@@ -54,7 +57,7 @@ for r in reqs:
     ahead_s = f"{min(r['ahead']):.1f}s" if r["ahead"] else "-"
     err_s = f"{err:+.2f}s" if err is not None else "-"
     flags = ("STOPPED " if r["stopped"] else "") + (f"LATE {r['late']} " if r["late"] else "")
-    print(f"{r['id']:>4} {len(r['text']):>5} {r['n']:>4} {r.get('synth1', 0):>8.2f}s {sil_s:>8} {ahead_s:>9} {err_s:>8}  {flags}{r['text'][:50]}")
+    print(f"{r['id']:>4} {r['chars']:>5} {r['n']:>4} {r.get('synth1', 0):>8.2f}s {sil_s:>8} {ahead_s:>9} {err_s:>8}  {flags}{r['text'][:50]}")
 t = [x for r in reqs for x in r["trims"]]
 if gaps:
     g = sorted(gaps)
