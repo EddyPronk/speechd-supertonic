@@ -1,0 +1,12 @@
+2026-10-06 21:20:17,100 [server] INFO quality steps: 8, first chunk of a paragraph: 8; text in log: no, length only
+2026-10-06 21:20:18,000 [server] INFO model loaded in 0.85s, voices: F1 F2 F3 F4 F5 M1 M2 M3 M4 M5
+2026-10-06 21:20:18,001 [server] INFO listening on socket from systemd
+2026-10-06 21:20:18,500 [server] INFO [1] start voice=F1 lang=nl (speechd voice=F1-nl language=en) rate=0 volume=1 text=<64 chars>
+2026-10-06 21:20:19,500 [server] INFO [1] chunk 1/1 synthesized in 1.00s (4.46s audio after trimming 0.54s+0.55s silence, 22% of real time), first audio 1.00s after request: <64 chars>
+2026-10-06 21:20:19,501 [server] INFO [1] synthesis done: 1 chunks, 4.46s audio in 1.00s; audio should end in ~4.46s
+2026-10-06 21:20:23,980 [player] INFO playback finished
+2026-10-06 21:20:24,040 [server] INFO [2] start voice=F1 lang=nl (speechd voice=F1-nl language=en) rate=0 volume=1 text=<200 chars>
+2026-10-06 21:20:26,040 [server] INFO [2] chunk 1/2 synthesized in 2.00s (8.00s audio after trimming 0.50s+0.70s silence, 25% of real time), first audio 2.00s after request, ~2.06s silence since previous audio: <120 chars>
+2026-10-06 21:20:28,040 [server] INFO [2] chunk 2/2 synthesized in 2.00s (6.00s audio after trimming 0.40s+0.60s silence, 33% of real time), ready 6.45s before needed: <79 chars>
+2026-10-06 21:20:28,041 [server] INFO [2] synthesis done: 2 chunks, 14.45s audio in 4.00s; audio should end in ~12.45s
+2026-10-06 21:20:40,500 [player] INFO playback finished

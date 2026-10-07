@@ -1,0 +1,4 @@
+2026-10-06 20:25:51,977 [server] INFO [2] start voice=M2 lang=nl (speechd voice=M2-nl language=en) rate=0 volume=0 text='The band members are busy.'
+2026-10-06 20:25:53,374 [server] INFO [2] chunk 1/1 synthesized in 1.40s (5.15s audio, 27% of real time), first audio 1.40s after request: 'The band members are busy.'
+2026-10-06 20:25:56,938 [server] INFO [2] synthesis done: 1 chunks, 5.15s audio in 1.40s; audio should end in ~1.59s
+2026-10-06 20:25:58,481 [player] INFO playback finished

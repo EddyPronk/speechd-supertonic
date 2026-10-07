@@ -10,7 +10,14 @@ the model loaded, and adds it to speech-dispatcher as an output module. Nothing
 leaves your machine.
 
 How it works, the log format and its known limits: [docs/how-it-works.md](docs/how-it-works.md).
-Measuring timing: [docs/testing.md](docs/testing.md).
+
+## Tested with
+
+Debian 13 (trixie) on x86_64, Firefox 157.0 (Mozilla's .deb), speech-dispatcher
+0.12.0, PipeWire 1.4.2, supertonic 1.3.1, Python 3.12 via uv 0.11.8. Everything
+marked *verified* below was checked on that setup (by hand, or by the automated
+tests in [`tests/`](#tests)). Other distributions, versions, and Firefox as a
+Snap or Flatpak have not been tried.
 
 ## Requirements
 
@@ -29,6 +36,20 @@ curl -LsSf https://astral.sh/uv/install.sh | sh      # or see the uv docs
 ```
 
 ## Install
+
+> **What the installer changes.** It works only in your home directory, but it
+> changes how speech-dispatcher behaves for your user:
+>
+> - If you have **no** `~/.config/speech-dispatcher/speechd.conf`, it creates one
+>   by **copying the system file** (`/etc/speech-dispatcher/speechd.conf`),
+>   because a user file replaces the system one entirely.
+> - If you **have** one, it **edits it in place**: it appends a block between
+>   `# >>> speechd-supertonic` and `# <<< speechd-supertonic`.
+> - That block makes Supertonic speech-dispatcher's **default voice** for all
+>   programs (skip with `--no-default`), and lists eSpeak NG next to it.
+>
+> `./install.sh --uninstall` removes the block again (and the file, if the
+> installer created it and you haven't changed it).
 
 ```
 git clone https://github.com/EddyPronk/speechd-supertonic.git
@@ -60,11 +81,8 @@ What it does, all in your home directory (no root):
 
 1. Copies the server and client to `~/.local/share/speechd-supertonic/`.
 2. Writes the speech-dispatcher module `~/.config/speech-dispatcher/modules/supertonic.conf`.
-3. Adds a marked block to `~/.config/speech-dispatcher/speechd.conf` that loads
-   the module and makes it the default (`--no-default` to skip that). If you
-   don't have that file yet, it starts from a copy of the system one, because a
-   user `speechd.conf` replaces `/etc/speech-dispatcher/speechd.conf` entirely.
-   eSpeak NG stays available next to it.
+3. Adds the marked block to `~/.config/speech-dispatcher/speechd.conf` (see the
+   box above).
 4. Installs and enables the systemd user units `supertonic-tts.socket` and
    `supertonic-tts.service`. The socket starts the server on first use.
 5. Restarts speech-dispatcher and sends a silent test request, which downloads
@@ -103,6 +121,10 @@ spd-say -o supertonic -y F1-en "Hello, this is Supertonic."
 Firefox remembers the chosen voice per page language, so pick one once for each
 language you read.
 
+*Verified* on Firefox 157.0: the menu labels, choosing a voice per language,
+Dutch and English pages, play/stop. *Not verified:* the speed slider and
+skipping forward/back.
+
 The same voices are available to web pages through the Web Speech API
 (`speechSynthesis`).
 
@@ -118,11 +140,36 @@ and length; the text itself only after `./install.sh --debug`). See
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
 | No Supertonic voices in Firefox | Firefox wasn't restarted, or speech-dispatcher didn't load the module | Restart Firefox. Check `spd-say -O` lists `supertonic`. |
-| Robotic voice, nothing new in the log | An eSpeak voice (or "Default") is selected, or the Supertonic module crashed and speech-dispatcher fell back to eSpeak | Pick an `-x-` voice. If that doesn't help: `pkill -u "$(id -u)" -x speech-dispatch` and try again. |
+| Robotic voice, nothing new in the log | An eSpeak voice (or "Default") is selected, **or** an earlier utterance failed (see the next row) and speech-dispatcher switched to eSpeak | Pick an `-x-` voice. Look for errors in the log. Then restart speech-dispatcher: `pkill -u "$(id -u)" -x speech-dispatch` |
+| Reading stops in the middle of an article; then the robotic voice | An utterance failed (server not running, player error): speech-dispatcher's module gives up, that paragraph never finishes, and later text goes to eSpeak *(verified by `tests/test_speechd.sh`)* | Fix the cause from the log (`can't reach server`, `player ... failed`), restart speech-dispatcher as above, press stop and play in Firefox. |
 | Wrong pronunciation (e.g. Dutch read as English) | A voice for the wrong language is selected | Check the `start` line in the log: `lang=` must match the page. Pick the matching `-x-` voice. |
 | `can't reach server` in the log | The socket or server isn't running | `systemctl --user status supertonic-tts.socket supertonic-tts.service` and `journalctl --user -u supertonic-tts.service` |
-| A pause of a few seconds before some paragraphs | Synthesis of the paragraph's first sentence; long first sentences take longer | Expected; see [docs/testing.md](docs/testing.md) for an experiment to shorten it. |
+| A pause of a few seconds before some paragraphs | Synthesis of the paragraph's first sentence; long first sentences take longer | Expected; see "Known limits" in [docs/how-it-works.md](docs/how-it-works.md#known-limits). |
 | `?` instead of quotes, dashes or accented letters | A language tag without a UTF-8 line in `supertonic.conf` | Rerun `./install.sh`. |
+
+## Tests
+
+```
+tests/run.sh
+```
+
+Runs everything without the model (a fake engine stands in for Supertonic) and
+without touching your configuration:
+
+- **Unit tests** for the server (rate, volume, language and sentence handling,
+  silence trimming, the socket protocol, disconnects, error logging, socket
+  permissions), the client (exit status when the server, synthesis or player
+  fails), and `speechd_timing.py` (sample logs, including empty and malformed ones).
+- **Installer tests** (`tests/test_install.sh`): install, reinstall, uninstall in
+  temporary directories; existing configuration; paths with spaces and `&`;
+  and the generated speech-dispatcher command run the way `sd_generic` runs it,
+  to check quoting (no command injection from page text) and exit status.
+- **End-to-end** (`tests/test_speechd.sh`): a private speech-dispatcher instance
+  with the generated configuration, the real client and a fake server: an
+  utterance completes, stopping keeps the module working, and a dead server
+  leads to the eSpeak fallback. Skipped if speech-dispatcher isn't installed.
+
+Needs uv (for the server's Python packages).
 
 ## Uninstall
 

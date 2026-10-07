@@ -17,19 +17,47 @@ APPDIR=${XDG_DATA_HOME:-$HOME/.local/share}/$NAME
 LOG=${XDG_CACHE_HOME:-$HOME/.cache}/speechd_supertonic.log
 SPEECHD=$CONFIG/speech-dispatcher
 UNITS=$CONFIG/systemd/user
-SYSTEM_SPEECHD_CONF=/etc/speech-dispatcher/speechd.conf
+# Overridable for tests and unusual layouts:
+SYSTEM_SPEECHD_CONF=${SPEECHD_SYSTEM_CONF:-/etc/speech-dispatcher/speechd.conf}
+MODULE_DIR_CANDIDATES=(/usr/lib/speech-dispatcher-modules /usr/lib/x86_64-linux-gnu/speech-dispatcher-modules
+                       /usr/lib/aarch64-linux-gnu/speech-dispatcher-modules /usr/lib64/speech-dispatcher-modules
+                       /usr/libexec/speech-dispatcher-modules)
+[ -n "${SPEECHD_MODULES_DIR:-}" ] && MODULE_DIR_CANDIDATES=("$SPEECHD_MODULES_DIR")
 BEGIN="# >>> $NAME (added by install.sh; removed by install.sh --uninstall)"
 END="# <<< $NAME"
 # Languages the Supertonic model supports (supertonic.AVAILABLE_LANGUAGES minus "na").
 SUPPORTED="en ko ja ar bg cs da de el es et fi fr hi hr hu id it lt lv nl pl pt ro ru sk sl sv tr uk vi"
 
-say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
-die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+if [ -t 1 ]; then BOLD=$'\033[1m' YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
+else BOLD="" YELLOW="" RED="" RESET=""; fi
+say() { printf '%s==>%s %s\n' "$BOLD" "$RESET" "$*"; }
+warn() { printf '%swarning:%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+die() { printf '%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 
 # Speech-dispatcher picks up config changes when it restarts; it is started on
 # demand, so stopping it is enough. (Process names are cut to 15 characters.)
 restart_speechd() { pkill -u "$(id -u)" -x speech-dispatch 2>/dev/null || true; }
+
+# Paths end up inside a shell command (single-quoted) and a systemd unit
+# (double-quoted, % is special), so refuse the few characters that can't be
+# quoted safely there.
+check_path() {
+    case $2 in
+        *[\'\"\\%$'\n']*) die "$1 contains a quote, backslash, % or newline, which isn't supported: $2" ;;
+    esac
+}
+
+# Replace @NAME@ placeholders without sed: values are inserted literally
+# (quoting the replacement keeps bash 5.2's patsub_replacement from treating & specially).
+fill() {
+    local text=$1
+    text=${text//@SAY@/"$APPDIR/supertonic_say.py"}
+    text=${text//@APPDIR@/"$APPDIR"}
+    text=${text//@LOG@/"$LOG"}
+    text=${text//@UV@/"$UV"}
+    text=${text//@SERVER_ARGS@/"$SERVER_ARGS"}
+    printf '%s\n' "$text"
+}
 
 # Remove our marked block from speechd.conf, if any.
 remove_block() {
@@ -99,12 +127,17 @@ UV=$(command -v uv) || die "uv not found; install it: https://docs.astral.sh/uv/
 command -v pw-play >/dev/null || die "pw-play not found (PipeWire); on Debian/Ubuntu: sudo apt install pipewire-bin"
 command -v python3 >/dev/null || die "python3 not found"
 command -v speech-dispatcher >/dev/null || die "speech-dispatcher not found; on Debian/Ubuntu: sudo apt install speech-dispatcher"
-MODULES_DIR=$(ls -d /usr/lib/speech-dispatcher-modules /usr/lib/*/speech-dispatcher-modules \
-                    /usr/libexec/speech-dispatcher-modules 2>/dev/null | head -1) || true
-[ -n "$MODULES_DIR" ] && [ -x "$MODULES_DIR/sd_generic" ] \
-    || die "speech-dispatcher's sd_generic module not found"
+MODULES_DIR=""
+for dir in "${MODULE_DIR_CANDIDATES[@]}"; do
+    if [ -x "$dir/sd_generic" ]; then MODULES_DIR=$dir; break; fi
+done
+[ -n "$MODULES_DIR" ] || die "speech-dispatcher's sd_generic module not found in: ${MODULE_DIR_CANDIDATES[*]} (set SPEECHD_MODULES_DIR)"
 command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1 \
     || die "needs a systemd user session (systemctl --user)"
+
+check_path "install directory" "$APPDIR"
+check_path "log file" "$LOG"
+check_path "uv" "$UV"
 
 if [ -f "$SPEECHD/speechd.conf" ] && sed "\|^$BEGIN\$|,\|^$END\$|d" "$SPEECHD/speechd.conf" \
         | grep -q '^[[:space:]]*AddModule[[:space:]]*"supertonic"'; then
@@ -115,22 +148,28 @@ fi
 
 say "Installing the server and client to $APPDIR"
 mkdir -p "$APPDIR"
+# The module command appends to the log; a missing directory would make every
+# utterance fail (and speech-dispatcher then gives up on the module).
+mkdir -p "$(dirname "$LOG")"
 install -m 755 "$SRC/supertonic_server.py" "$SRC/supertonic_say.py" "$SRC/speechd_timing.py" "$APPDIR/"
 
 say "Writing the speech-dispatcher module ($SPEECHD/modules/supertonic.conf, voices: $LANGUAGES)"
 mkdir -p "$SPEECHD/modules"
 first_lang=${LANGUAGES%% *}
-{
+module_conf=$(
     cat <<'EOF'
 # speech-dispatcher module for Supertonic TTS, written by speechd-supertonic's
 # install.sh (rerun it to change the voice languages). See docs/how-it-works.md.
 #
-# Per utterance, sd_generic runs: supertonic_say.py asks the Supertonic server
-# (supertonic-tts.service, model stays loaded) for audio and pw-play plays it.
+# Per utterance, sd_generic runs supertonic_say.py: it asks the Supertonic server
+# (supertonic-tts.service, model stays loaded) for audio and plays it with
+# pw-play. It is a single command, so its exit status is the command's: non-zero
+# if the server can't be reached or playback fails. Its stderr (errors, and a
+# "playback finished" line) goes to the log.
 #
 # $DATA is single-quoted on purpose: sd_generic escapes single quotes in the
 # text, so web pages can't inject shell commands.
-GenericExecuteSynth "printf %s \'$DATA\' | @SAY@ --voice \'$VOICE\' --lang \'$LANGUAGE\' --rate $RATE --volume $VOLUME 2>>@LOG@ | pw-play --raw --format f32 --rate 44100 --channels 1 - 2>>@LOG@; printf \'%s [player] INFO playback finished\\n\' \"$(date \'+%F %T,%3N\')\" >>@LOG@"
+GenericExecuteSynth "printf %s \'$DATA\' | \'@SAY@\' --voice \'$VOICE\' --lang \'$LANGUAGE\' --rate $RATE --volume $VOLUME 2>>\'@LOG@\'"
 GenericCmdDependency "pw-play"
 
 # Pass speech-dispatcher's raw -100..100 values; the server maps them.
@@ -169,7 +208,8 @@ EOF
     done
     echo
     echo "DefaultVoice \"F1-$first_lang\""
-} | sed -e "s#@SAY@#$APPDIR/supertonic_say.py#g" -e "s#@LOG@#$LOG#g" > "$SPEECHD/modules/supertonic.conf"
+)
+fill "$module_conf" > "$SPEECHD/modules/supertonic.conf"
 
 say "Registering the module in $SPEECHD/speechd.conf"
 conf=$SPEECHD/speechd.conf
@@ -194,8 +234,7 @@ remove_block "$conf"
 say "Installing the systemd user units (socket starts the server on first use)"
 mkdir -p "$UNITS"
 install -m 644 "$SRC/systemd/supertonic-tts.socket" "$UNITS/"
-sed -e "s#@UV@#$UV#g" -e "s#@APPDIR@#$APPDIR#g" -e "s#@LOG@#$LOG#g" -e "s#@SERVER_ARGS@#$SERVER_ARGS#g" \
-    "$SRC/systemd/supertonic-tts.service.in" > "$UNITS/supertonic-tts.service"
+fill "$(cat "$SRC/systemd/supertonic-tts.service.in")" > "$UNITS/supertonic-tts.service"
 systemctl --user daemon-reload
 systemctl --user enable --now supertonic-tts.socket
 # Pick up a new server version if it was already running.
@@ -204,7 +243,7 @@ systemctl --user try-restart supertonic-tts.service
 restart_speechd
 
 say "First request: downloads Python packages and the model (~400 MB) on first install"
-if printf %s 'Test.' | "$APPDIR/supertonic_say.py" --voice "F1-$first_lang" > /dev/null; then
+if printf %s 'Test.' | "$APPDIR/supertonic_say.py" --voice "F1-$first_lang" --output - > /dev/null; then
     say "Server is working. Try:  spd-say -o supertonic -y F1-$first_lang \"Hello\""
 else
     warn "the test request failed; see $LOG and: journalctl --user -u supertonic-tts.service"

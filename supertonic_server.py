@@ -8,8 +8,10 @@
 # ///
 """Supertonic TTS server for speech-dispatcher: keeps the model loaded.
 
-Listens on a Unix socket ($XDG_RUNTIME_DIR/supertonic-tts.sock, or the socket
-systemd passes in). Protocol, one request per connection:
+Listens on a Unix socket: the one systemd passes in, or
+$XDG_RUNTIME_DIR/supertonic-tts.sock when run by hand. There is no fallback
+without XDG_RUNTIME_DIR: a predictable path in a shared directory like /tmp
+would let other local users take over the socket. Protocol, one request per connection:
 
     client -> server   one JSON line: {"text": ..., "voice": "F1", "lang": "en-AU",
                                        "rate": 0, "volume": 0}
@@ -33,6 +35,7 @@ import re
 import select
 import socket
 import socketserver
+import stat
 import sys
 import threading
 import time
@@ -51,14 +54,14 @@ SAMPLE_RATE = 44100  # what supertonic_say.py tells the player to expect
 SILENCE_SECONDS = 0.45
 STEPS = 8  # quality steps per chunk: more is better but slower
 # Steps for a paragraph's first chunk, the only one the listener waits for.
-# Set with --first-steps (e.g. 4 to roughly halve the wait); see docs/testing.md.
+# Set with --first-steps (e.g. 4 to roughly halve the wait); see docs/how-it-works.md ("Known limits").
 first_steps = STEPS
 # The text being read (web pages, documents) is only logged with --debug;
 # otherwise the log shows its length.
 log_text = False
 TRIM_THRESHOLD = 0.01      # samples quieter than this count as silence...
 TRIM_MARGIN = 0.04         # ...but keep this much around the audible part (soft consonants)
-SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "supertonic-tts.sock"
+SOCKET_NAME = "supertonic-tts.sock"
 LOG_FILE = Path(os.environ.get("SPEECHD_SUPERTONIC_LOG",
                                Path.home() / ".cache" / "speechd_supertonic.log"))
 
@@ -89,18 +92,24 @@ def split_voice(voice):
     return name, (lang or None)
 
 
-# Sentence end: . ! ? or … (optionally followed by a closing quote/bracket), then
-# whitespace, then something that looks like the start of a new sentence.
-SENTENCE_END = re.compile(r"""(?<=[.!?…])["'”’)\]]*\s+(?=["'“‘(\[]?[A-Z0-9À-ÖØ-Þ])""")
+# Sentence end: . ! ? or … plus any closing quotes/brackets, followed by
+# whitespace and something that looks like the start of a new sentence.
+SENTENCE_END = re.compile(r"""[.!?…]["'”’)\]]*(?=\s+["'“‘(\[]?[A-Z0-9À-ÖØ-Þ])""")
 
 
 def split_sentences(text):
     """Split into sentences (each synthesized in one call, so its intonation stays
     intact), and only split a sentence further if it is too long for the model.
     Sentences after the first are synthesized while earlier ones play."""
+    sentences, start = [], 0
+    for m in SENTENCE_END.finditer(text):
+        sentences.append(text[start:m.end()])
+        start = m.end()
+    sentences.append(text[start:])
     chunks = []
-    for sentence in SENTENCE_END.split(text):
-        chunks.extend(c.strip() for c in chunk_text(sentence.strip()) if c.strip())
+    for sentence in sentences:
+        if sentence.strip():
+            chunks.extend(c.strip() for c in chunk_text(sentence.strip()) if c.strip())
     return chunks
 
 
@@ -149,7 +158,13 @@ class Handler(socketserver.StreamRequestHandler):
     def client_gone(self):
         """True if the client hung up (speech-dispatcher stopped the speech)."""
         readable, _, _ = select.select([self.connection], [], [], 0)
-        return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+        if not readable:
+            return False
+        try:
+            return not self.connection.recv(1, socket.MSG_PEEK)
+        except (ConnectionResetError, BrokenPipeError):
+            # Closed with audio still unread (speech stopped): the kernel resets it.
+            return True
 
     def handle(self):
         req_id = next(request_ids)
@@ -177,6 +192,9 @@ class Handler(socketserver.StreamRequestHandler):
         speed = speechd_rate_to_speed(rate)
         gain = 1 + min(0, max(-100, volume)) / 100  # 0 (default) and up = full volume
         pieces = split_sentences(text)
+        if not pieces:
+            log.info("[%s] done (nothing to say)", req_id)
+            return
 
         # Sending happens in its own thread: a write blocks until the player has
         # room, which for a long sentence is nearly the end of its playback.
@@ -189,47 +207,55 @@ class Handler(socketserver.StreamRequestHandler):
         audio_seconds = 0.0  # audio handed to the sender so far
         synth_seconds = 0.0
         first_audio = None   # when playback (approximately) started
-        with engine.lock:
-            waited = time.monotonic() - received
-            if waited > 0.05:
-                log.info("[%s] waited %.2fs for the previous request to finish", req_id, waited)
-            style = engine.style(name)
-            for i, piece in enumerate(pieces):
-                if gone.is_set() or self.client_gone():
-                    log.info("[%s] stopped by client before chunk %d/%d", req_id, i + 1, len(pieces))
-                    outbox.put(None)
-                    self.server.audio_ends = None
-                    return
-                t = time.monotonic()
-                steps = first_steps if i == 0 else STEPS
-                wav, _ = engine.tts.synthesize(piece, voice_style=style, total_steps=steps,
-                                               speed=speed, lang=lang)
-                now = time.monotonic()
-                synth = now - t
-                synth_seconds += synth
-                audio, cut_lead, cut_trail = trim_silence(wav.squeeze().astype(np.float32) * gain)
-                length = audio.size / SAMPLE_RATE
-                if first_audio is None:
-                    first_audio = now
-                    timing = self.first_audio_timing(received)
-                else:
-                    # Positive: ready before the previous audio runs out. Negative: the
-                    # player ran dry and the listener heard a gap of that length.
-                    ahead = first_audio + audio_seconds - now
-                    if ahead >= 0:
-                        timing = f"ready {ahead:.2f}s before needed"
+        try:
+            with engine.lock:
+                waited = time.monotonic() - received
+                if waited > 0.05:
+                    log.info("[%s] waited %.2fs for the previous request to finish", req_id, waited)
+                style = engine.style(name)
+                for i, piece in enumerate(pieces):
+                    if gone.is_set() or self.client_gone():
+                        log.info("[%s] stopped by client before chunk %d/%d", req_id, i + 1, len(pieces))
+                        outbox.put(None)
+                        sender.join()
+                        self.server.audio_ends = None
+                        return
+                    t = time.monotonic()
+                    steps = first_steps if i == 0 else STEPS
+                    wav, _ = engine.tts.synthesize(piece, voice_style=style, total_steps=steps,
+                                                   speed=speed, lang=lang)
+                    now = time.monotonic()
+                    synth = now - t
+                    synth_seconds += synth
+                    audio, cut_lead, cut_trail = trim_silence(wav.squeeze().astype(np.float32) * gain)
+                    length = audio.size / SAMPLE_RATE
+                    if first_audio is None:
+                        first_audio = now
+                        timing = self.first_audio_timing(received)
                     else:
-                        timing = f"LATE by {-ahead:.2f}s (audible gap)"
-                        first_audio -= ahead  # playback resumes now
-                log.info("[%s] chunk %d/%d synthesized in %.2fs (%.2fs audio after trimming "
-                         "%.2fs+%.2fs silence, %.0f%% of real time), %s: %s",
-                         req_id, i + 1, len(pieces), synth, length, cut_lead, cut_trail,
-                         100 * synth / max(length, 1e-6), timing, shown(piece))
-                if i < len(pieces) - 1:
-                    audio = np.concatenate([audio, np.zeros(int(SILENCE_SECONDS * SAMPLE_RATE), dtype=np.float32)])
-                audio_seconds += audio.size / SAMPLE_RATE
-                self.server.audio_ends = first_audio + audio_seconds
-                outbox.put(audio.astype("<f4").tobytes())
+                        # Positive: ready before the previous audio runs out. Negative: the
+                        # player ran dry and the listener heard a gap of that length.
+                        ahead = first_audio + audio_seconds - now
+                        if ahead >= 0:
+                            timing = f"ready {ahead:.2f}s before needed"
+                        else:
+                            timing = f"LATE by {-ahead:.2f}s (audible gap)"
+                            first_audio -= ahead  # playback resumes now
+                    log.info("[%s] chunk %d/%d synthesized in %.2fs (%.2fs audio after trimming "
+                             "%.2fs+%.2fs silence, %.0f%% of real time), %s: %s",
+                             req_id, i + 1, len(pieces), synth, length, cut_lead, cut_trail,
+                             100 * synth / max(length, 1e-6), timing, shown(piece))
+                    if i < len(pieces) - 1:
+                        audio = np.concatenate([audio, np.zeros(int(SILENCE_SECONDS * SAMPLE_RATE), dtype=np.float32)])
+                    audio_seconds += audio.size / SAMPLE_RATE
+                    self.server.audio_ends = first_audio + audio_seconds
+                    outbox.put(audio.astype("<f4").tobytes())
+        except BaseException:
+            # Let the sender finish before the connection is closed; the error
+            # itself is logged by Server.handle_error.
+            outbox.put(None)
+            sender.join()
+            raise
         outbox.put(None)
         log.info("[%s] synthesis done: %d chunks, %.2fs audio in %.2fs; audio should end in ~%.2fs",
                  req_id, len(pieces), audio_seconds, synth_seconds,
@@ -244,7 +270,7 @@ class Handler(socketserver.StreamRequestHandler):
             try:
                 self.wfile.write(data)
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:  # BrokenPipeError, ConnectionResetError, ...
                 gone.set()
                 return
 
@@ -258,24 +284,53 @@ class Handler(socketserver.StreamRequestHandler):
         return text
 
 
+def default_socket_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        sys.exit("XDG_RUNTIME_DIR is not set; run from a systemd user session "
+                 "(or set it to a private directory, mode 0700)")
+    return Path(runtime) / SOCKET_NAME
+
+
+def remove_stale_socket(path):
+    """Remove a leftover socket from an earlier run, but only if it is ours."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.getuid():
+        sys.exit(f"{path} exists and is not our socket; not touching it")
+    path.unlink()
+
+
 class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
-    def __init__(self, engine):
+    def __init__(self, engine, path=None):
         self.engine = engine
         self.audio_ends = None  # monotonic time the last sent audio should finish playing
         # LISTEN_PID is uv's PID when started via `uv run`, so accept our parent too.
         listen_pid = os.environ.get("LISTEN_PID")
-        if os.environ.get("LISTEN_FDS") == "1" and listen_pid in (str(os.getpid()), str(os.getppid())):
+        if path is None and os.environ.get("LISTEN_FDS") == "1" and \
+                listen_pid in (str(os.getpid()), str(os.getppid())):
             # Socket activation: systemd already created and bound the socket (fd 3).
-            super().__init__(str(SOCKET_PATH), Handler, bind_and_activate=False)
+            super().__init__("", Handler, bind_and_activate=False)
             self.socket.close()
             self.socket = socket.socket(fileno=3)
             log.info("listening on socket from systemd")
         else:
-            SOCKET_PATH.unlink(missing_ok=True)
-            super().__init__(str(SOCKET_PATH), Handler)
-            log.info("listening on %s", SOCKET_PATH)
+            path = Path(path) if path else default_socket_path()
+            remove_stale_socket(path)
+            old_umask = os.umask(0o177)  # socket readable/writable by us only
+            try:
+                super().__init__(str(path), Handler)
+            finally:
+                os.umask(old_umask)
+            log.info("listening on %s", path)
+
+    def handle_error(self, request, client_address):
+        # Default prints to stderr only; put tracebacks in the log file too.
+        log.exception("request failed")
 
 
 def main():

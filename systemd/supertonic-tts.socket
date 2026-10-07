@@ -3,6 +3,7 @@ Description=Supertonic TTS server socket (for speech-dispatcher)
 
 [Socket]
 ListenStream=%t/supertonic-tts.sock
+SocketMode=0600
 
 [Install]
 WantedBy=sockets.target
