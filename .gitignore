@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+*~
+# Environment-specific Claude notes (CLAUDE.md itself is shared)
+CLAUDE.local.md
+CLAUDE.container.md
