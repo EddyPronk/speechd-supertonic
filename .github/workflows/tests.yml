@@ -1,0 +1,28 @@
+name: tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      # For the speech-dispatcher end-to-end test, which needs speech-dispatcher
+      # and a sound server socket. If this step fails, that test reports SKIPPED
+      # and the rest still runs.
+      - name: Set up speech-dispatcher and a headless sound server
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y speech-dispatcher pulseaudio
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$(id -u)" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink
+
+      - name: Run tests
+        run: tests/run.sh
