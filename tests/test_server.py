@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import stat
+import struct
 import tempfile
 import time
 import unittest
@@ -14,19 +15,36 @@ import numpy as np
 from fakes import RATE, FakeEngine, expected_samples, running_server, server
 
 
-def request(runtime_dir, text, voice="F1-en", lang="en", rate=0, volume=0, read=True):
-    """Send one request; return the raw audio bytes (or the open socket if read=False)."""
+def read_frames(sock):
+    """Read the server's frames until EOF: (audio bytes, [(type, payload), ...] of non-audio frames)."""
+    data = b""
+    while chunk := sock.recv(65536):
+        data += chunk
+    sock.close()
+    audio, others, pos = b"", [], 0
+    while pos + 5 <= len(data):
+        kind, length = struct.unpack(">cI", data[pos:pos + 5])
+        payload = data[pos + 5:pos + 5 + length]
+        pos += 5 + length
+        if kind == server.AUDIO:
+            audio += payload
+        else:
+            others.append((kind, payload))
+    assert pos == len(data), "trailing partial frame"
+    return audio, others
+
+
+def request(runtime_dir, text, voice="F1-en", lang="en", rate=0, volume=0, read=True, raw=False):
+    """Send one request; return the audio bytes, or (audio, other frames) with raw=True,
+    or the open socket with read=False."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(os.path.join(runtime_dir, server.SOCKET_NAME))
     msg = {"text": text, "voice": voice, "lang": lang, "rate": rate, "volume": volume}
     sock.sendall(json.dumps(msg).encode() + b"\n")
     if not read:
         return sock
-    data = b""
-    while chunk := sock.recv(65536):
-        data += chunk
-    sock.close()
-    return data
+    audio, others = read_frames(sock)
+    return (audio, others) if raw else audio
 
 
 class TestHelpers(unittest.TestCase):
@@ -98,7 +116,8 @@ class TestProtocol(unittest.TestCase):
     def test_streams_trimmed_sentences_with_pauses(self):
         text = "First sentence here. Second one."
         with running_server() as (_, engine, rt):
-            data = request(rt, text)
+            data, others = request(rt, text, raw=True)
+        self.assertEqual(others, [(server.DONE, b"")])
         self.assertEqual(len(data) % 4, 0)
         self.assertEqual(len(data) // 4, expected_samples(text))
         audio = np.frombuffer(data, dtype="<f4")
@@ -132,25 +151,38 @@ class TestProtocol(unittest.TestCase):
             server.first_steps = server.STEPS
         self.assertEqual([c[1] for c in engine.tts.calls], [4, server.STEPS, server.STEPS])
 
-    def test_empty_text_sends_nothing(self):
+    def test_empty_text_sends_only_done(self):
         with running_server() as (_, engine, rt):
-            self.assertEqual(request(rt, "   "), b"")
+            self.assertEqual(request(rt, "   ", raw=True), (b"", [(server.DONE, b"")]))
         self.assertEqual(engine.tts.calls, [])
 
     def test_bad_request_then_next_request_works(self):
         with running_server() as (_, _, rt):
             with self.assertLogs("supertonic_server", "ERROR"):
-                with socket.socket(socket.AF_UNIX) as sock:
-                    sock.connect(os.path.join(rt, server.SOCKET_NAME))
-                    sock.sendall(b"not json\n")
-                    self.assertEqual(sock.recv(10), b"")
+                sock = socket.socket(socket.AF_UNIX)
+                sock.connect(os.path.join(rt, server.SOCKET_NAME))
+                sock.sendall(b"not json\n")
+                audio, others = read_frames(sock)
+                self.assertEqual(audio, b"")
+                self.assertEqual(others[0][0], server.ERROR)
+                self.assertIn(b"bad request", others[0][1])
             self.assertGreater(len(request(rt, "Still works.")), 0)
 
-    def test_synthesis_error_is_logged_and_sends_nothing(self):
+    def test_synthesis_error_is_logged_and_reported(self):
         with running_server(FakeEngine(fail=True)) as (_, _, rt):
             with self.assertLogs("supertonic_server", "ERROR") as logs:
-                self.assertEqual(request(rt, "Fails."), b"")
+                audio, others = request(rt, "Fails.", raw=True)
+        self.assertEqual(audio, b"")
+        self.assertEqual([k for k, _ in others], [server.ERROR])
+        self.assertIn(b"fake synthesis failure", others[0][1])
         self.assertTrue(any("request failed" in line for line in logs.output))
+
+    def test_failure_after_partial_audio_ends_with_error_not_done(self):
+        with running_server(FakeEngine(fail_after=1)) as (_, _, rt):
+            with self.assertLogs("supertonic_server", "ERROR"):
+                audio, others = request(rt, "First sentence. Second sentence.", raw=True)
+        self.assertGreater(len(audio), 0)                     # the first sentence was sent
+        self.assertEqual([k for k, _ in others], [server.ERROR])  # ...but no DONE
 
     def test_client_disconnect_stops_synthesis(self):
         engine = FakeEngine(delay=0.2)

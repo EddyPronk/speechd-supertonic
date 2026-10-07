@@ -57,8 +57,8 @@ and feeds it the audio, so the command's exit status is the client's:
 | Situation | Client exits | What speech-dispatcher does |
 |-----------|--------------|-----------------------------|
 | Played to the end | 0, logs `[player] INFO playback finished` | Reports the end of the utterance; Narrate sends the next one. |
-| Stopped or skipped (speech-dispatcher kills the client) | killed | Normal stop; the module keeps working. *Verified (end-to-end test).* |
-| Server unreachable, no audio from the server, or player fails | 1, error in the log | sd_generic logs "We failed to speak, kill ourself" and exits. speech-dispatcher sends **no** end event for that utterance (Narrate waits until you press stop), and uses eSpeak NG for everything after it until speech-dispatcher restarts. *Verified (end-to-end test, speech-dispatcher 0.12.0).* |
+| Stopped or skipped (speech-dispatcher kills the client) | killed | Normal stop: the utterance ends at once, the player is killed with the client, and the module keeps working. *Verified (end-to-end test).* |
+| Server unreachable; server reports an error (also after part of the audio was played); connection closed before the end of the utterance; player fails or stops reading early | 1, error in the log, no `playback finished` | sd_generic logs "We failed to speak, kill ourself" and exits. speech-dispatcher sends **no** end event for that utterance (Narrate waits until you press stop), and uses eSpeak NG for everything after it until speech-dispatcher restarts. *Verified (end-to-end test, speech-dispatcher 0.12.0).* |
 
 Before this was fixed, the command ended with a separate `printf` that logged
 "playback finished", which hid failures: a dead server meant silent
@@ -90,15 +90,25 @@ Before this was fixed, the command ended with a separate `printf` that logged
   "end of utterance" and Narrate sends the next paragraph.
 - **Stop/skip:** speech-dispatcher kills the client (and the player with it), so
   the socket closes. The server notices before the next chunk and drops the rest
-  of that request. A
-  chunk that is already being synthesized finishes first, so the next utterance
-  may wait up to one chunk's synthesis time (about 1–3s).
+  of that request. A chunk that is already being synthesized finishes first, so
+  the next utterance may wait up to one chunk's synthesis time (about 1–3s).
 - Requests are handled one at a time (the model isn't shared between threads).
 - The socket lives in `$XDG_RUNTIME_DIR` (private to your user). The server and
   client refuse to run without it rather than falling back to a shared directory
   like `/tmp`, where another local user could take over the socket.
-- Protocol: one JSON line `{"text", "voice", "lang", "rate", "volume"}` →
-  raw mono little-endian float32 at 44100 Hz → EOF.
+- **Protocol**, one request per connection. The client sends one JSON line
+  `{"text", "voice", "lang", "rate", "volume"}`. The server answers with frames
+  of 1 type byte, a 4-byte big-endian length, and the payload:
+
+  | Type | Payload |
+  |------|---------|
+  | `A` | audio: mono little-endian float32 at 44100 Hz, one frame per sentence |
+  | `D` | done: the whole utterance was sent (empty) |
+  | `E` | error: a UTF-8 message; the utterance is incomplete |
+
+  Only `D` counts as success. Without the end frame, a server that failed after
+  the first sentence looked exactly like a finished utterance; a connection that
+  closes without `D` or `E` is now treated as incomplete too.
 
 Parameter mapping (done in the server):
 

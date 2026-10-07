@@ -31,9 +31,10 @@ setup() {
     APP=$HOME_DIR/.local/share/speechd-supertonic
 }
 
+# MODULES_ENV can replace the default SPEECHD_MODULES_DIR override, e.g. to test the search.
 run_install() {
     env -i PATH="$T/bin:/usr/bin:/bin" HOME="$HOME_DIR" LANG="${LANG_FOR_TEST:-C}" \
-        XDG_RUNTIME_DIR="$T/run" SPEECHD_MODULES_DIR="$T/modules" \
+        XDG_RUNTIME_DIR="$T/run" ${MODULES_ENV:-SPEECHD_MODULES_DIR=$T/modules} \
         SPEECHD_SYSTEM_CONF="$T/system-speechd.conf" \
         bash "$ROOT/install.sh" "$@" > "$T/out" 2>&1
 }
@@ -111,10 +112,37 @@ check "service has literal path" 'grep -qF "\"$APP/supertonic_server.py\"" "$CON
 check "module conf has literal path" 'grep -qF "$APP/supertonic_say.py" "$CONF/speech-dispatcher/modules/supertonic.conf"'
 GEN_HOME=$HOME_DIR; GEN_T=$T  # used by the command test below
 
-echo "paths with a quote are refused"
-setup "it's home"
+echo "paths with a quote or \$ are refused"
+for bad in "it's home" 'home $USER' 'home ${HOME}'; do
+    setup "$bad"
+    run_install; rc=$?
+    check "'$bad': non-zero exit + message" '[ $rc != 0 ] && grep -q "isn.t supported" "$T/out"'
+    check "'$bad': nothing installed" '[ ! -e "$APP" ]'
+    teardown
+done
+
+echo "a path containing a placeholder name is written literally"
+setup 'home @LOG@ @UV@'
 run_install; rc=$?
-check "non-zero exit + message" '[ $rc != 0 ] && grep -q "isn.t supported" "$T/out"'
+check "exit 0" '[ $rc = 0 ]'
+check "service keeps the literal path" 'grep -qF "\"$APP/supertonic_server.py\"" "$CONF/systemd/user/supertonic-tts.service"'
+check "log path literal" 'grep -qF "SPEECHD_SUPERTONIC_LOG=$HOME_DIR/.cache/speechd_supertonic.log" "$CONF/systemd/user/supertonic-tts.service"'
+check "module conf keeps the literal path" 'grep -qF "$APP/supertonic_say.py" "$CONF/speech-dispatcher/modules/supertonic.conf"'
+teardown
+
+echo "modules found in a multiarch directory that isn't listed anywhere"
+setup
+mkdir -p "$T/root/usr/lib/riscv64-linux-gnu/speech-dispatcher-modules"
+cp "$T/modules/"* "$T/root/usr/lib/riscv64-linux-gnu/speech-dispatcher-modules/"
+MODULES_ENV="SPEECHD_SUPERTONIC_SYSROOT=$T/root" run_install; rc=$?
+check "exit 0 (got $rc): $(tail -2 "$T/out")" '[ $rc = 0 ]'
+check "espeak-ng found next to it" 'grep -q "AddModule \"espeak-ng\"" "$CONF/speech-dispatcher/speechd.conf"'
+teardown
+
+echo "no modules anywhere: clear error"
+setup
+MODULES_ENV="SPEECHD_SUPERTONIC_SYSROOT=$T/empty-root" run_install; rc=$?
+check "non-zero exit + hint" '[ $rc != 0 ] && grep -q "set SPEECHD_MODULES_DIR" "$T/out"'
 teardown
 
 echo "generated command, run like sd_generic: quoting and exit status"

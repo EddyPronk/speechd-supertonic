@@ -57,8 +57,15 @@ start_server() {
     echo "fake server didn't start:"; cat "$T/server.log"; exit 1
 }
 
-# A player that takes a while, like real playback, then discards the audio.
-export SUPERTONIC_PLAYER="sh -c 'sleep 1; cat > /dev/null'"
+# A player that takes a while, like real playback, then discards the audio. It is
+# a single process (like pw-play), so killing it really stops it.
+PLAYER_CODE="import sys, time; time.sleep(2.37); sys.stdin.buffer.read()"
+export SUPERTONIC_PLAYER="python3 -c '$PLAYER_CODE'"
+# Exact or anchored patterns, so pgrep can't match an unrelated command line
+# (such as the shell that started this test).
+CLIENT_PATTERN="^[^ ]*python3 $H/.local/share/speechd-supertonic/supertonic_say.py"
+PLAYER_CMDLINE="python3 -c $PLAYER_CODE"
+alive() { pgrep -f "$CLIENT_PATTERN" >/dev/null || pgrep -fx "$PLAYER_CMDLINE" >/dev/null; }
 start_server
 XDG_RUNTIME_DIR="$T/run" HOME="$H" speech-dispatcher -s -l 4 -c unix_socket -S "$T/sd.sock" \
     -C "$CONFDIR" -L "$T/log" -P "$T/sd.pid" -t 0 >/dev/null 2>&1 &
@@ -73,12 +80,28 @@ check "spd-say -w returns 0 (got $rc)" '[ $rc = 0 ]'
 check "client logged playback finished" 'grep -q "playback finished" "$LOG"'
 check "server got the request" 'grep -q "\[1\] start voice=F1 lang=en" "$T/server.log"'
 
-echo "stopping mid-utterance keeps the module alive"
-timeout 20 spd-say -o supertonic -y F1-en "First sentence. Second sentence. Third sentence. Fourth sentence." &
+echo "stopping mid-utterance ends it promptly and keeps the module alive"
+# -w: wait for the utterance's end (or cancel) event, so its result can be checked.
+timeout 20 spd-say -w -o supertonic -y F1-en "First sentence. Second sentence. Third sentence. Fourth sentence." &
 SAY=$!
-sleep 1.5
+sleep 1
+check "client and player are running before the stop" 'alive'
+stop_at=$(date +%s%N)
 timeout 5 spd-say -C
-wait "$SAY"
+wait "$SAY"; rc=$?
+stop_ms=$(( ($(date +%s%N) - stop_at) / 1000000 ))
+echo "  (stopped utterance: spd-say -w exit $rc after ${stop_ms} ms)"
+check "stopped utterance returns 0 (got $rc)" '[ $rc = 0 ]'
+check "stopped utterance returns within 2s (took ${stop_ms} ms)" '[ $stop_ms -lt 2000 ]'
+sleep 0.3
+if alive; then
+    fail "client and player are gone after the stop"
+    pgrep -af "$CLIENT_PATTERN"; pgrep -afx "$PLAYER_CMDLINE"
+    for i in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; alive || { echo "  (gone after $((i * 500)) ms more)"; break; }; done
+else
+    ok
+fi
+check "stop logged no playback finished for it" '[ "$(grep -c "playback finished" "$LOG")" = 1 ]'
 timeout 20 spd-say -w -o supertonic -y F1-en "After the stop."; rc=$?
 check "next utterance completes (got $rc)" '[ $rc = 0 ]'
 check "module not restarted/crashed" '! grep -q "terminated abnormally" "$SDLOG"'

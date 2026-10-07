@@ -77,6 +77,13 @@ To log the text too (handy when something is mispronounced or skipped):
 
 Run `./install.sh` again without it to switch back.
 
+Your home directory path (and `XDG_*` directories, if set) may contain spaces
+and most other characters, but not quotes, backslashes, `$`, `%` or newlines:
+those would need escaping in the generated shell command and systemd unit, so
+the installer refuses them with a clear message. speech-dispatcher's modules
+are searched in `lib*/[<arch>/]speech-dispatcher-modules` under `/usr`,
+`/usr/local` and `/`; set `SPEECHD_MODULES_DIR` if yours are elsewhere.
+
 What it does, all in your home directory (no root):
 
 1. Copies the server and client to `~/.local/share/speechd-supertonic/`.
@@ -159,17 +166,29 @@ without touching your configuration:
 - **Unit tests** for the server (rate, volume, language and sentence handling,
   silence trimming, the socket protocol, disconnects, error logging, socket
   permissions), the client (exit status when the server, synthesis or player
-  fails), and `speechd_timing.py` (sample logs, including empty and malformed ones).
+  fails, including a failure after part of the audio), and `speechd_timing.py`
+  (sample logs, including empty and malformed ones).
 - **Installer tests** (`tests/test_install.sh`): install, reinstall, uninstall in
-  temporary directories; existing configuration; paths with spaces and `&`;
-  and the generated speech-dispatcher command run the way `sd_generic` runs it,
-  to check quoting (no command injection from page text) and exit status.
+  temporary directories; existing configuration; paths with spaces, `&`, `#` and
+  placeholder-like names, refused paths; module discovery in an unlisted
+  multiarch directory; and the generated speech-dispatcher command run the way
+  `sd_generic` runs it, to check quoting (no command injection from page text)
+  and exit status.
 - **End-to-end** (`tests/test_speechd.sh`): a private speech-dispatcher instance
   with the generated configuration, the real client and a fake server: an
-  utterance completes, stopping keeps the module working, and a dead server
-  leads to the eSpeak fallback. Skipped if speech-dispatcher isn't installed.
+  utterance completes; a stop ends the utterance at once, kills the client and
+  player, and keeps the module working; a dead server leads to the eSpeak
+  fallback. Skipped if speech-dispatcher or a sound server isn't available.
 
-Needs uv (for the server's Python packages).
+Needs uv (for the server's Python packages) and permission to create Unix
+sockets. The runner checks both first and exits with status 2 and a
+"SETUP PROBLEM" message if the environment can't run the tests, as opposed to
+status 1 for a failing test. If uv's cache isn't writable (for example in a
+sandbox), point it elsewhere:
+
+```
+UV_CACHE_DIR=/tmp/uv-cache tests/run.sh
+```
 
 ## Uninstall
 

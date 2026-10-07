@@ -19,10 +19,10 @@ SPEECHD=$CONFIG/speech-dispatcher
 UNITS=$CONFIG/systemd/user
 # Overridable for tests and unusual layouts:
 SYSTEM_SPEECHD_CONF=${SPEECHD_SYSTEM_CONF:-/etc/speech-dispatcher/speechd.conf}
-MODULE_DIR_CANDIDATES=(/usr/lib/speech-dispatcher-modules /usr/lib/x86_64-linux-gnu/speech-dispatcher-modules
-                       /usr/lib/aarch64-linux-gnu/speech-dispatcher-modules /usr/lib64/speech-dispatcher-modules
-                       /usr/libexec/speech-dispatcher-modules)
-[ -n "${SPEECHD_MODULES_DIR:-}" ] && MODULE_DIR_CANDIDATES=("$SPEECHD_MODULES_DIR")
+# Where speech-dispatcher's modules may live: <prefix>/lib*/[<multiarch>/]
+# or <prefix>/libexec, for the usual prefixes. SPEECHD_MODULES_DIR overrides the
+# search; SPEECHD_SUPERTONIC_SYSROOT prefixes it (for tests).
+SYSROOT=${SPEECHD_SUPERTONIC_SYSROOT:-}
 BEGIN="# >>> $NAME (added by install.sh; removed by install.sh --uninstall)"
 END="# <<< $NAME"
 # Languages the Supertonic model supports (supertonic.AVAILABLE_LANGUAGES minus "na").
@@ -41,22 +41,50 @@ restart_speechd() { pkill -u "$(id -u)" -x speech-dispatch 2>/dev/null || true; 
 # Paths end up inside a shell command (single-quoted) and a systemd unit
 # (double-quoted, % is special), so refuse the few characters that can't be
 # quoted safely there.
+# Accepted paths: anything except quotes, backslash, $, % and newline. They end up
+# single-quoted in a shell command and double-quoted in a systemd unit, where $
+# and % would be expanded.
 check_path() {
     case $2 in
-        *[\'\"\\%$'\n']*) die "$1 contains a quote, backslash, % or newline, which isn't supported: $2" ;;
+        *[\'\"\\\$%$'\n']*) die "$1 contains a quote, backslash, \$, % or newline, which isn't supported: $2" ;;
     esac
 }
 
-# Replace @NAME@ placeholders without sed: values are inserted literally
-# (quoting the replacement keeps bash 5.2's patsub_replacement from treating & specially).
+# Print the first directory with an executable sd_generic.
+find_modules_dir() {
+    if [ -n "${SPEECHD_MODULES_DIR:-}" ]; then
+        [ -x "$SPEECHD_MODULES_DIR/sd_generic" ] && printf '%s\n' "$SPEECHD_MODULES_DIR"
+        return
+    fi
+    local dir candidates
+    shopt -s nullglob
+    candidates=("$SYSROOT"{/usr,/usr/local,}/lib{,64,exec}/speech-dispatcher-modules
+                "$SYSROOT"{/usr,/usr/local,}/lib{,64}/*/speech-dispatcher-modules)
+    shopt -u nullglob
+    for dir in "${candidates[@]}"; do
+        if [ -x "$dir/sd_generic" ]; then printf '%s\n' "$dir"; return; fi
+    done
+}
+
+# Replace @NAME@ placeholders in a template; values are inserted literally.
 fill() {
-    local text=$1
-    text=${text//@SAY@/"$APPDIR/supertonic_say.py"}
-    text=${text//@APPDIR@/"$APPDIR"}
-    text=${text//@LOG@/"$LOG"}
-    text=${text//@UV@/"$UV"}
-    text=${text//@SERVER_ARGS@/"$SERVER_ARGS"}
-    printf '%s\n' "$text"
+    # One pass over the template: each @NAME@ is replaced once, and inserted
+    # values are never scanned again (a path may itself contain "@LOG@").
+    local rest=$1 out="" name value
+    while [[ $rest =~ ^([^@]*)@([A-Z_]+)@(.*)$ ]]; do
+        name=${BASH_REMATCH[2]}
+        case $name in
+            SAY) value=$APPDIR/supertonic_say.py ;;
+            APPDIR) value=$APPDIR ;;
+            LOG) value=$LOG ;;
+            UV) value=$UV ;;
+            SERVER_ARGS) value=$SERVER_ARGS ;;
+            *) die "unknown placeholder @$name@ in a template" ;;
+        esac
+        out+=${BASH_REMATCH[1]}$value
+        rest=${BASH_REMATCH[3]}
+    done
+    printf '%s\n' "$out$rest"
 }
 
 # Remove our marked block from speechd.conf, if any.
@@ -127,11 +155,9 @@ UV=$(command -v uv) || die "uv not found; install it: https://docs.astral.sh/uv/
 command -v pw-play >/dev/null || die "pw-play not found (PipeWire); on Debian/Ubuntu: sudo apt install pipewire-bin"
 command -v python3 >/dev/null || die "python3 not found"
 command -v speech-dispatcher >/dev/null || die "speech-dispatcher not found; on Debian/Ubuntu: sudo apt install speech-dispatcher"
-MODULES_DIR=""
-for dir in "${MODULE_DIR_CANDIDATES[@]}"; do
-    if [ -x "$dir/sd_generic" ]; then MODULES_DIR=$dir; break; fi
-done
-[ -n "$MODULES_DIR" ] || die "speech-dispatcher's sd_generic module not found in: ${MODULE_DIR_CANDIDATES[*]} (set SPEECHD_MODULES_DIR)"
+MODULES_DIR=$(find_modules_dir)
+[ -n "$MODULES_DIR" ] || die "speech-dispatcher's sd_generic module not found under /usr, /usr/local or /
+       in lib*/[<arch>/]speech-dispatcher-modules; set SPEECHD_MODULES_DIR to its directory"
 command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1 \
     || die "needs a systemd user session (systemctl --user)"
 

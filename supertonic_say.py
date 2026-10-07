@@ -7,8 +7,10 @@ utterance. Standard library only, so it starts instantly.
 
     printf %s 'Hello' | supertonic_say.py --voice F1-en
 
-Exit status: 0 after successful playback (or when stopped by the player going
-away), 1 if the server can't be reached, sends no audio, or the player fails. Errors go to
+Exit status: 0 after the whole utterance was played; 1 if the server can't be
+reached, reports an error, or closes the connection before the end of the
+utterance, or if the player fails or stops reading early. (A stop from
+speech-dispatcher kills this process, and the player with it.) Errors go to
 stderr; speech-dispatcher's module config appends that to the log, followed by
 "playback finished" only after a successful run.
 
@@ -25,12 +27,12 @@ import os
 import shlex
 import signal
 import socket
+import struct
 import subprocess
 import sys
 
 PLAYER = os.environ.get("SUPERTONIC_PLAYER", "pw-play --raw --format f32 --rate 44100 --channels 1 -")
-# Errors that mean "the other side went away", e.g. speech was stopped.
-DISCONNECTED = (BrokenPipeError, ConnectionResetError)
+AUDIO, DONE, ERROR = b"A", b"D", b"E"  # frame types, see supertonic_server.py
 
 
 def socket_path():
@@ -46,6 +48,44 @@ def die_with_parent():
     stops speech with SIGKILL), the player is killed too instead of finishing its buffer."""
     PR_SET_PDEATHSIG = 1
     ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+
+
+def recv_exact(sock, n):
+    """Read exactly n bytes, or return None if the connection ends first."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
+
+
+def receive(sock, out):
+    """Copy audio frames to `out` until the server's done/error frame.
+
+    Returns None on success, or a description of what went wrong. Raises
+    BrokenPipeError if `out` stops accepting data."""
+    try:
+        while True:
+            header = recv_exact(sock, 5)
+            if header is None:
+                return "server closed the connection before the end of the utterance"
+            kind, length = struct.unpack(">cI", header)
+            payload = recv_exact(sock, length) if length else b""
+            if payload is None:
+                return "server closed the connection in the middle of a frame"
+            if kind == AUDIO:
+                out.write(payload)
+                out.flush()
+            elif kind == DONE:
+                return None
+            elif kind == ERROR:
+                return "server error: " + payload.decode(errors="replace")
+            else:
+                return f"unexpected frame type {kind!r} from server"
+    except ConnectionResetError:
+        return "server reset the connection before the end of the utterance"
 
 
 def log(message):
@@ -85,30 +125,33 @@ def main():
                 sys.exit(f"supertonic_say: can't start player {args.player!r}: {e}")
             out = player.stdin
 
-        stopped = False
-        received = 0
         try:
-            while data := sock.recv(65536):
-                received += len(data)
-                out.write(data)
-                out.flush()
-        except DISCONNECTED:
-            # The player went away (speech stopped) or the server reset the
-            # connection; closing the socket tells the server to stop.
-            stopped = True
+            problem = receive(sock, out)
+            player_gone = False
+        except BrokenPipeError:
+            problem, player_gone = None, True
 
-        if player:
-            try:
-                player.stdin.close()
-            except DISCONNECTED:
-                stopped = True
-            status = player.wait()
-            if received == 0 and req["text"].strip() and not stopped:
-                sys.exit("supertonic_say: server sent no audio; see the server's log")
-            if status != 0 and not stopped:
-                sys.exit(f"supertonic_say: player {args.player!r} failed with exit status {status}")
-            if status == 0:
-                log("playback finished")
+    if player is None:
+        if player_gone:
+            # --output - into a pipe that closed early (e.g. "| head"): just stop,
+            # without Python complaining when it flushes stdout at exit.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        if problem:
+            sys.exit(f"supertonic_say: {problem}")
+        return
+
+    try:
+        player.stdin.close()
+    except BrokenPipeError:
+        player_gone = True
+    status = player.wait()
+    if problem:
+        sys.exit(f"supertonic_say: {problem}")
+    if status != 0:
+        sys.exit(f"supertonic_say: player {args.player!r} failed with exit status {status}")
+    if player_gone:
+        sys.exit(f"supertonic_say: player {args.player!r} stopped reading before the end of the audio")
+    log("playback finished")
 
 
 if __name__ == "__main__":

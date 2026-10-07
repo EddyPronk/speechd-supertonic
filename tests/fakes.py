@@ -30,14 +30,15 @@ PER_CHAR = 0.01     # seconds of "speech" per character
 
 
 class FakeTTS:
-    def __init__(self, delay=0.0, fail=False):
+    def __init__(self, delay=0.0, fail=False, fail_after=None):
         self.delay = delay   # seconds per synthesize() call, to simulate a slow model
         self.fail = fail
+        self.fail_after = fail_after  # fail from this call on (0-based), e.g. 1 = after one sentence
         self.calls = []      # (text, steps, speed, lang)
 
     def synthesize(self, text, voice_style, total_steps, speed, lang):
         self.calls.append((text, total_steps, speed, lang))
-        if self.fail:
+        if self.fail or (self.fail_after is not None and len(self.calls) > self.fail_after):
             raise RuntimeError("fake synthesis failure")
         time.sleep(self.delay)
         n = int(len(text) * PER_CHAR * RATE)

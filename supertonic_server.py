@@ -15,8 +15,12 @@ would let other local users take over the socket. Protocol, one request per conn
 
     client -> server   one JSON line: {"text": ..., "voice": "F1", "lang": "en-AU",
                                        "rate": 0, "volume": 0}
-    server -> client   raw mono float32 little-endian PCM at 44100 Hz, streamed
-                       chunk by chunk as it is synthesized, then EOF
+    server -> client   frames of 1 type byte + 4-byte big-endian length + payload:
+                         b"A"  audio: mono float32 little-endian PCM at 44100 Hz,
+                               one frame per sentence, sent as it is synthesized
+                         b"D"  done: the whole utterance was sent (empty payload)
+                         b"E"  error: UTF-8 message; the utterance is incomplete
+                       A connection that closes without D or E is incomplete too.
 
 If the client goes away (speech-dispatcher killed it to stop speech) the server
 stops synthesizing that request. See supertonic_say.py for the client.
@@ -36,6 +40,7 @@ import select
 import socket
 import socketserver
 import stat
+import struct
 import sys
 import threading
 import time
@@ -62,6 +67,7 @@ log_text = False
 TRIM_THRESHOLD = 0.01      # samples quieter than this count as silence...
 TRIM_MARGIN = 0.04         # ...but keep this much around the audible part (soft consonants)
 SOCKET_NAME = "supertonic-tts.sock"
+AUDIO, DONE, ERROR = b"A", b"D", b"E"  # frame types, see the protocol above
 LOG_FILE = Path(os.environ.get("SPEECHD_SUPERTONIC_LOG",
                                Path.home() / ".cache" / "speechd_supertonic.log"))
 
@@ -80,6 +86,10 @@ def speechd_rate_to_speed(rate):
 def shown(text):
     """The text for the log: itself with --debug, otherwise only its length."""
     return repr(text) if log_text else f"<{len(text)} chars>"
+
+
+def frame(kind, payload=b""):
+    return struct.pack(">cI", kind, len(payload)) + payload
 
 
 def split_voice(voice):
@@ -177,6 +187,7 @@ class Handler(socketserver.StreamRequestHandler):
             volume = int(req.get("volume", 0))
         except (ValueError, TypeError) as e:
             log.error("[%s] bad request: %s", req_id, e)
+            self.send_frame(ERROR, f"bad request: {e}".encode())
             return
 
         received = time.monotonic()
@@ -186,6 +197,7 @@ class Handler(socketserver.StreamRequestHandler):
                  req_id, name, lang, voice, lang_in, rate, volume, shown(text))
         if not text:
             log.info("[%s] done (empty text)", req_id)
+            self.send_frame(DONE)
             return
 
         engine = self.server.engine
@@ -194,6 +206,7 @@ class Handler(socketserver.StreamRequestHandler):
         pieces = split_sentences(text)
         if not pieces:
             log.info("[%s] done (nothing to say)", req_id)
+            self.send_frame(DONE)
             return
 
         # Sending happens in its own thread: a write blocks until the player has
@@ -249,13 +262,16 @@ class Handler(socketserver.StreamRequestHandler):
                         audio = np.concatenate([audio, np.zeros(int(SILENCE_SECONDS * SAMPLE_RATE), dtype=np.float32)])
                     audio_seconds += audio.size / SAMPLE_RATE
                     self.server.audio_ends = first_audio + audio_seconds
-                    outbox.put(audio.astype("<f4").tobytes())
-        except BaseException:
-            # Let the sender finish before the connection is closed; the error
-            # itself is logged by Server.handle_error.
+                    outbox.put(frame(AUDIO, audio.astype("<f4").tobytes()))
+        except Exception as e:
+            # Tell the client the utterance is incomplete, and let the sender
+            # finish before the connection is closed. The traceback is logged by
+            # Server.handle_error.
+            outbox.put(frame(ERROR, f"synthesis failed: {e}".encode()))
             outbox.put(None)
             sender.join()
             raise
+        outbox.put(frame(DONE))
         outbox.put(None)
         log.info("[%s] synthesis done: %d chunks, %.2fs audio in %.2fs; audio should end in ~%.2fs",
                  req_id, len(pieces), audio_seconds, synth_seconds,
@@ -264,6 +280,13 @@ class Handler(socketserver.StreamRequestHandler):
         if gone.is_set():
             log.info("[%s] stopped by client while sending", req_id)
             self.server.audio_ends = None
+
+    def send_frame(self, kind, payload=b""):
+        try:
+            self.wfile.write(frame(kind, payload))
+            self.wfile.flush()
+        except OSError:
+            pass  # client already gone
 
     def send_audio(self, outbox, gone):
         while (data := outbox.get()) is not None:
