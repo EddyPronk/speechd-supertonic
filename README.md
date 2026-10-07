@@ -138,6 +138,19 @@ The same voices are available to web pages through the Web Speech API
 Not tested yet: Firefox installed as a Snap or Flatpak (the sandbox may not be
 able to reach speech-dispatcher), and other browsers.
 
+## Other programs
+
+Anything that speaks through speech-dispatcher can use the voices, for example
+from a shell or script:
+
+```
+spd-say -o supertonic -y F1-en "Hello, this is Supertonic."
+spd-say -o supertonic -y M2-en "A different voice."
+```
+
+`spd-say -o supertonic -L` lists the voices. [examples/claude-code](examples/claude-code)
+has a hook that makes Claude Code read its replies and notifications aloud.
+
 ## Troubleshooting
 
 The server logs every utterance to `~/.cache/speechd_supertonic.log` (timing

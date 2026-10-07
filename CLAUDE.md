@@ -4,6 +4,8 @@ Supertonic TTS as a speech-dispatcher output module (for Firefox Read aloud).
 `supertonic_server.py` keeps the model loaded; `supertonic_say.py` is the client
 that speech-dispatcher's sd_generic runs per utterance; `install.sh` writes the
 module config and systemd user units. User docs: README.md, docs/how-it-works.md.
+`examples/claude-code/speak.py` is a Claude Code hook that speaks replies (tested
+by `tests/test_claude_hook.py`); the user's live copy is `~/.claude/hooks/speak.py`.
 
 ## Rules for any change
 
