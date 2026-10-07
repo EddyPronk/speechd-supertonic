@@ -26,8 +26,13 @@ export PULSE_SERVER=unix:$PULSE_SOCKET
 # sd_generic before 0.12.0-rc3 (e.g. Ubuntu 24.04's 0.12.0~rc2) reports any
 # non-killed command as finished, so a failed utterance doesn't make the module
 # give up there (see docs/how-it-works.md).
-SD_VERSION=$(speech-dispatcher -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?([~-]rc[0-9]+)?' | head -1)
-echo "speech-dispatcher ${SD_VERSION:-(version unknown)}"
+# `speech-dispatcher -v` leaves out the rc suffix (Ubuntu's 0.12.0~rc2 prints
+# "0.12.0"), so prefer the package version where there is one.
+SD_VERSION_RAW=$(dpkg-query -W -f='${Version}' speech-dispatcher 2>/dev/null \
+                 || rpm -q --qf '%{VERSION}' speech-dispatcher 2>/dev/null \
+                 || speech-dispatcher -v 2>/dev/null)
+SD_VERSION=$(printf '%s\n' "$SD_VERSION_RAW" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?([~-]rc[0-9]+)?' | head -1)
+echo "speech-dispatcher ${SD_VERSION:-(version unknown)} (from: ${SD_VERSION_RAW:-nothing})"
 gives_up_on_failure() {
     case $SD_VERSION in
         "" | 0.12.0[~-]rc[3-9]*) return 0 ;;
@@ -144,7 +149,7 @@ else
     timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
     check "client error in log" 'grep -q "can.t reach server" "$LOG"'
     check "failed utterance still gets an end event (got $rc)" '[ $rc = 0 ]'
-    check "module kept running" '! grep -q "terminated abnormally" "$SDLOG"'
+    check "module kept running" '! grep -qE "terminated abnormally|Output module not running" "$SDLOG"'
     check "no playback finished logged for it" '[ "$(grep -c "playback finished" "$LOG")" = 2 ]'
 fi
 
