@@ -5,7 +5,8 @@
 - Ubuntu 24.04 (speech-dispatcher 0.12.0~rc2, the old failure behaviour). Its
   sound-server setup is `continue-on-error`, so the end-to-end test may skip there.
 - Debian trixie container (0.12.0, the setup the project was verified on), hosted
-  on `ubuntu-latest`. Runs as an unprivileged user (PulseAudio refuses root) and
+  on `ubuntu-24.04` (pinned rather than `ubuntu-latest`, which moves to Ubuntu 26
+  from 2026-10-19). Runs as an unprivileged user (PulseAudio refuses root) and
   fails if the end-to-end test was skipped.
 
 The workflow token is read-only (`permissions: contents: read`).
@@ -14,7 +15,9 @@ The workflow token is read-only (`permissions: contents: read`).
 
 - `actions/checkout` is on a major tag (`@v7`).
 - `astral-sh/setup-uv` no longer publishes major-version tags; it is pinned to a
-  release (`@v10.2.0`) and has to be bumped by hand.
+  release (`@v10.2.0`) and has to be bumped by hand. Its cache is keyed on
+  `cache-dependency-glob` (`supertonic_server.py`, `tests/run.sh`): the files
+  that declare the Python dependencies. Update it if they move.
 - Keep actions on releases that declare `using: node24` in their `action.yml`;
   Node 20 actions are deprecated on GitHub's runners.
 

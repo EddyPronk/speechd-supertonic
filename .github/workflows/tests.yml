@@ -13,6 +13,12 @@ jobs:
       - uses: actions/checkout@v7
       # setup-uv no longer publishes major-version tags, so pin the release.
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          # The dependencies are declared in the server's inline script metadata
+          # and in tests/run.sh, not in a requirements file or uv.lock.
+          cache-dependency-glob: |
+            supertonic_server.py
+            tests/run.sh
 
       # For the speech-dispatcher end-to-end test, which needs speech-dispatcher
       # and a sound server socket. If this step fails, that test reports SKIPPED
@@ -37,7 +43,9 @@ jobs:
   # end-to-end test must run: the job fails if it was skipped.
   test-debian:
     name: test (Debian trixie, speech-dispatcher 0.12)
-    runs-on: ubuntu-latest
+    # Pinned so the container host doesn't change under us (ubuntu-latest moves
+    # to Ubuntu 26 from 2026-10-19); the tests run inside the container.
+    runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
       - name: Install packages
