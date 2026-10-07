@@ -227,10 +227,14 @@ EOF
 # the server reads the language from the suffix). The language tags are unique
 # too ("nl-x-m2") because Firefox's voice menu on Linux shows only the tag:
 # "Dutch (nl-x-m2)" is voice M2 in Dutch.
+#
+# The second field must be one of speech-dispatcher's voice types (FEMALE1-3,
+# MALE1-3, CHILD_FEMALE, CHILD_MALE); lines with others, like FEMALE4, are
+# silently dropped. So voices 4 and 5 share type 3.
 EOF
     for lang in $LANGUAGES; do
-        for n in 1 2 3 4 5; do echo "AddVoice \"$lang-x-f$n\" \"FEMALE$n\" \"F$n-$lang\""; done
-        for n in 1 2 3 4 5; do echo "AddVoice \"$lang-x-m$n\" \"MALE$n\" \"M$n-$lang\""; done
+        for n in 1 2 3 4 5; do echo "AddVoice \"$lang-x-f$n\" \"FEMALE$(( n < 3 ? n : 3 ))\" \"F$n-$lang\""; done
+        for n in 1 2 3 4 5; do echo "AddVoice \"$lang-x-m$n\" \"MALE$(( n < 3 ? n : 3 ))\" \"M$n-$lang\""; done
     done
     echo
     echo "DefaultVoice \"F1-$first_lang\""

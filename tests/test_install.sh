@@ -49,6 +49,8 @@ M=$CONF/speech-dispatcher/modules/supertonic.conf
 check "module conf exists" '[ -f "$M" ]'
 check "20 voices for en+nl" '[ "$(grep -c "^AddVoice" "$M")" = 20 ]'
 check "nl voice line" 'grep -qx "AddVoice \"nl-x-m2\" \"MALE2\" \"M2-nl\"" "$M"'
+check "voice 5 uses a valid voice type" 'grep -qx "AddVoice \"nl-x-f5\" \"FEMALE3\" \"F5-nl\"" "$M"'
+check "only voice types speech-dispatcher accepts" '! grep "^AddVoice" "$M" | grep -vqE "^AddVoice \"[^\"]+\" \"(FEMALE[123]|MALE[123]|CHILD_FEMALE|CHILD_MALE)\" "'
 check "utf-8 for every tag" '[ "$(grep -c "^GenericLanguage" "$M")" = 22 ]'
 check "single command, no pw-play pipeline" '! grep "^GenericExecuteSynth" "$M" | grep -q "pw-play"'
 check "client path quoted" 'grep -q "| \\\\'"'"'$APP/supertonic_say.py\\\\'"'"' " "$M"'

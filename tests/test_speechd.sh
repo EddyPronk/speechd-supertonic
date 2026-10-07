@@ -74,6 +74,10 @@ for _ in $(seq 100); do [ -S "$T/sd.sock" ] && break; sleep 0.1; done
 [ -S "$T/sd.sock" ] || { echo "speech-dispatcher didn't start"; exit 1; }
 export SPEECHD_ADDRESS="unix_socket:$T/sd.sock"
 
+echo "all voices are registered"
+VOICES=$(timeout 10 spd-say -o supertonic -L | awk 'NR > 1 {print $1}' | sort | tr '\n' ' ')
+check "10 voices for en (got: $VOICES)" '[ "$VOICES" = "F1-en F2-en F3-en F4-en F5-en M1-en M2-en M3-en M4-en M5-en " ]'
+
 echo "utterance completes"
 timeout 20 spd-say -w -o supertonic -y F1-en "Hello from the test."; rc=$?
 check "spd-say -w returns 0 (got $rc)" '[ $rc = 0 ]'
