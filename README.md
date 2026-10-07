@@ -178,7 +178,8 @@ without touching your configuration:
   with the generated configuration, the real client and a fake server: an
   utterance completes; a stop ends the utterance at once, kills the client and
   player, and keeps the module working; a dead server leads to the eSpeak
-  fallback. Skipped if speech-dispatcher or a sound server isn't available.
+  fallback (with speech-dispatcher 0.12; 0.11 reports the failed utterance as
+  finished instead, which the test checks for there). Skipped if speech-dispatcher or a sound server isn't available.
 
 Needs uv (for the server's Python packages) and permission to create Unix
 sockets. The runner checks both first and exits with status 2 and a

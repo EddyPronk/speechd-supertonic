@@ -23,6 +23,13 @@ PULSE_SOCKET=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native
 [ -S "$PULSE_SOCKET" ] \
     || { echo "speech-dispatcher test: SKIPPED (no PulseAudio/PipeWire socket at $PULSE_SOCKET)"; exit 0; }
 export PULSE_SERVER=unix:$PULSE_SOCKET
+# sd_generic before 0.12 reports any non-killed command as finished, so a failed
+# utterance doesn't make the module give up there (see docs/how-it-works.md).
+SD_VERSION=$(speech-dispatcher -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+echo "speech-dispatcher ${SD_VERSION:-(version unknown)}"
+gives_up_on_failure() {
+    [ -z "$SD_VERSION" ] || [ "$(printf '%s\n' 0.12 "$SD_VERSION" | sort -V | head -1)" = 0.12 ]
+}
 
 FAILS=0
 PASSES=0
@@ -111,16 +118,26 @@ check "next utterance completes (got $rc)" '[ $rc = 0 ]'
 check "module not restarted/crashed" '! grep -q "terminated abnormally" "$SDLOG"'
 check "after-stop request reached our server" '[ "$(grep -c "start voice=" "$T/server.log")" -ge 3 ]'
 
-echo "server down: module gives up, speech-dispatcher falls back"
-kill "$SRV"; wait "$SRV" 2>/dev/null; SRV=
-timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
-check "client error in log" 'grep -q "can.t reach server" "$LOG"'
-check "speech-dispatcher noticed the module died" 'grep -q "terminated abnormally" "$SDLOG"'
-check "failed utterance gets no end event (spd-say -w times out; got $rc)" '[ $rc = 124 ]'
-if [ -x /usr/lib/speech-dispatcher-modules/sd_espeak-ng ] || command -v espeak-ng >/dev/null; then
-    timeout 20 spd-say -w -o supertonic "Spoken by the fallback."; rc=$?
-    check "next utterance completes via fallback (got $rc)" '[ $rc = 0 ]'
-    check "fallback logged" 'grep -q "Couldn.t load default output module" "$SDLOG"'
+if gives_up_on_failure; then
+    echo "server down: module gives up, speech-dispatcher falls back"
+    kill "$SRV"; wait "$SRV" 2>/dev/null; SRV=
+    timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
+    check "client error in log" 'grep -q "can.t reach server" "$LOG"'
+    check "speech-dispatcher noticed the module died" 'grep -q "terminated abnormally" "$SDLOG"'
+    check "failed utterance gets no end event (spd-say -w times out; got $rc)" '[ $rc = 124 ]'
+    if [ -x /usr/lib/speech-dispatcher-modules/sd_espeak-ng ] || command -v espeak-ng >/dev/null; then
+        timeout 20 spd-say -w -o supertonic "Spoken by the fallback."; rc=$?
+        check "next utterance completes via fallback (got $rc)" '[ $rc = 0 ]'
+        check "fallback logged" 'grep -q "Couldn.t load default output module" "$SDLOG"'
+    fi
+else
+    echo "server down: the failure is reported as a finished utterance (speech-dispatcher < 0.12)"
+    kill "$SRV"; wait "$SRV" 2>/dev/null; SRV=
+    timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
+    check "client error in log" 'grep -q "can.t reach server" "$LOG"'
+    check "failed utterance still gets an end event (got $rc)" '[ $rc = 0 ]'
+    check "module kept running" '! grep -q "terminated abnormally" "$SDLOG"'
+    check "no playback finished logged for it" '[ "$(grep -c "playback finished" "$LOG")" = 2 ]'
 fi
 
 echo
