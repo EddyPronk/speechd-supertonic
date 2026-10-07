@@ -1,13 +1,18 @@
 name: tests
 on: [push, pull_request]
 
+# The jobs only read the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (Ubuntu 24.04, speech-dispatcher 0.12.0~rc2)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      # setup-uv no longer publishes major-version tags, so pin the release.
+      - uses: astral-sh/setup-uv@v10.2.0
 
       # For the speech-dispatcher end-to-end test, which needs speech-dispatcher
       # and a sound server socket. If this step fails, that test reports SKIPPED
@@ -40,7 +45,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git procps \
             python3 speech-dispatcher speech-dispatcher-espeak-ng pulseaudio pulseaudio-utils
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The container runs as root, which PulseAudio refuses, so the tests run as
       # an ordinary user with their own uv and runtime directory.
