@@ -23,12 +23,17 @@ PULSE_SOCKET=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native
 [ -S "$PULSE_SOCKET" ] \
     || { echo "speech-dispatcher test: SKIPPED (no PulseAudio/PipeWire socket at $PULSE_SOCKET)"; exit 0; }
 export PULSE_SERVER=unix:$PULSE_SOCKET
-# sd_generic before 0.12 reports any non-killed command as finished, so a failed
-# utterance doesn't make the module give up there (see docs/how-it-works.md).
-SD_VERSION=$(speech-dispatcher -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+# sd_generic before 0.12.0-rc3 (e.g. Ubuntu 24.04's 0.12.0~rc2) reports any
+# non-killed command as finished, so a failed utterance doesn't make the module
+# give up there (see docs/how-it-works.md).
+SD_VERSION=$(speech-dispatcher -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?([~-]rc[0-9]+)?' | head -1)
 echo "speech-dispatcher ${SD_VERSION:-(version unknown)}"
 gives_up_on_failure() {
-    [ -z "$SD_VERSION" ] || [ "$(printf '%s\n' 0.12 "$SD_VERSION" | sort -V | head -1)" = 0.12 ]
+    case $SD_VERSION in
+        "" | 0.12.0[~-]rc[3-9]*) return 0 ;;
+        0.12.0[~-]rc*) return 1 ;;
+    esac
+    [ "$(printf '%s\n' 0.12 "$SD_VERSION" | sort -V | head -1)" = 0.12 ]
 }
 
 FAILS=0
@@ -123,7 +128,10 @@ if gives_up_on_failure; then
     kill "$SRV"; wait "$SRV" 2>/dev/null; SRV=
     timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
     check "client error in log" 'grep -q "can.t reach server" "$LOG"'
-    check "speech-dispatcher noticed the module died" 'grep -q "terminated abnormally" "$SDLOG"'
+    # Which message depends on whether the module had fully exited when
+    # speech-dispatcher noticed (output_check_module in its output.c).
+    check "speech-dispatcher noticed the module died" \
+        'grep -qE "terminated abnormally|Output module not running" "$SDLOG"'
     check "failed utterance gets no end event (spd-say -w times out; got $rc)" '[ $rc = 124 ]'
     if [ -x /usr/lib/speech-dispatcher-modules/sd_espeak-ng ] || command -v espeak-ng >/dev/null; then
         timeout 20 spd-say -w -o supertonic "Spoken by the fallback."; rc=$?
@@ -131,7 +139,7 @@ if gives_up_on_failure; then
         check "fallback logged" 'grep -q "Couldn.t load default output module" "$SDLOG"'
     fi
 else
-    echo "server down: the failure is reported as a finished utterance (speech-dispatcher < 0.12)"
+    echo "server down: the failure is reported as a finished utterance (speech-dispatcher before 0.12.0-rc3)"
     kill "$SRV"; wait "$SRV" 2>/dev/null; SRV=
     timeout 8 spd-say -w -o supertonic -y F1-en "Nobody is listening."; rc=$?
     check "client error in log" 'grep -q "can.t reach server" "$LOG"'

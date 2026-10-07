@@ -3,8 +3,8 @@ on: [push, pull_request]
 
 jobs:
   test:
-    name: test (Ubuntu, speech-dispatcher 0.11)
-    runs-on: ubuntu-latest
+    name: test (Ubuntu 24.04, speech-dispatcher 0.12.0~rc2)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

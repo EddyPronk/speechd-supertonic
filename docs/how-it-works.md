@@ -60,11 +60,12 @@ and feeds it the audio, so the command's exit status is the client's:
 | Stopped or skipped (speech-dispatcher kills the client) | killed | Normal stop: the utterance ends at once, the player is killed with the client, and the module keeps working. *Verified (end-to-end test).* |
 | Server unreachable; server reports an error (also after part of the audio was played); connection closed before the end of the utterance; player fails or stops reading early | 1, error in the log, no `playback finished` | sd_generic logs "We failed to speak, kill ourself" and exits. speech-dispatcher sends **no** end event for that utterance (Narrate waits until you press stop), and uses eSpeak NG for everything after it until speech-dispatcher restarts. *Verified (end-to-end test, speech-dispatcher 0.12.0).* |
 
-The last row is speech-dispatcher 0.12. In 0.11 (for example Ubuntu 24.04),
-sd_generic reports every command that wasn't killed as finished, whatever its
-exit status: a failed utterance gets an end event, the module keeps running,
-there is no eSpeak fallback, and the error is only in the client's log.
-*Verified (end-to-end test, speech-dispatcher 0.11.5 in GitHub Actions).*
+The last row is speech-dispatcher 0.12.0-rc3 and later. Older versions,
+including 0.12.0~rc2 in Ubuntu 24.04, report every command that wasn't killed
+as finished, whatever its exit status: a failed utterance gets an end event,
+the module keeps running, there is no eSpeak fallback, and the error is only in
+the client's log. *Verified (end-to-end test, speech-dispatcher 0.12.0~rc2 on
+Ubuntu 24.04 in GitHub Actions).*
 
 Before this was fixed, the command ended with a separate `printf` that logged
 "playback finished", which hid failures: a dead server meant silent
